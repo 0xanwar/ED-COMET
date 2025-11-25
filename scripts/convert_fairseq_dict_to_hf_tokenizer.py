@@ -12,7 +12,7 @@ from pathlib import Path
 from collections import OrderedDict
 
 
-def read_fairseq_dict(dict_path):
+def read_fairseq_dict(dict_path, add_special_tokens=True):
     """
     Read fairseq dict.txt file.
 
@@ -21,10 +21,34 @@ def read_fairseq_dict(dict_path):
         the 1234567
         , 987654
         ...
+
+    Args:
+        dict_path: Path to fairseq dict.txt
+        add_special_tokens: If True, adds standard fairseq special tokens at indices 0-4
     """
     vocab = OrderedDict()
+
+    # Fairseq reserves indices 0-4 for special tokens (not in dict.txt)
+    # Standard convention:
+    # 0: <s> (BOS)
+    # 1: <pad>
+    # 2: </s> (EOS)
+    # 3: <unk>
+    # 4: <mask> (for BART denoising)
+    # Then dict.txt tokens start from index 5
+    if add_special_tokens:
+        vocab['<s>'] = 0
+        vocab['<pad>'] = 1
+        vocab['</s>'] = 2
+        vocab['<unk>'] = 3
+        vocab['<mask>'] = 4
+        # dict.txt tokens start from index 5
+        start_idx = 5
+    else:
+        start_idx = 0
+
     with open(dict_path, 'r', encoding='utf-8') as f:
-        for idx, line in enumerate(f):
+        for file_idx, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
@@ -32,8 +56,10 @@ def read_fairseq_dict(dict_path):
             parts = line.split()
             if len(parts) >= 1:
                 token = parts[0]
-                # Count is parts[1] if it exists, but we don't need it for HF
-                vocab[token] = idx
+                # In fairseq, dict.txt tokens start after special tokens
+                # So actual index = file line number + number of special tokens
+                actual_idx = file_idx + start_idx if add_special_tokens else file_idx
+                vocab[token] = actual_idx
 
     return vocab
 
@@ -139,13 +165,29 @@ def convert_fairseq_dict_to_hf(dict_path, output_dir):
 
     # Read fairseq dictionary
     print("Step 1: Reading fairseq dictionary...")
-    fairseq_vocab = read_fairseq_dict(dict_path)
+    fairseq_vocab = read_fairseq_dict(dict_path, add_special_tokens=True)
     vocab_size = len(fairseq_vocab)
     print(f"✓ Loaded {vocab_size:,} tokens")
 
-    # Show some sample tokens
-    sample_tokens = list(fairseq_vocab.keys())[:10]
-    print(f"  Sample tokens: {sample_tokens}")
+    # Show special tokens
+    special_tokens = ['<s>', '<pad>', '</s>', '<unk>', '<mask>']
+    print(f"\n  Special tokens added:")
+    for token in special_tokens:
+        if token in fairseq_vocab:
+            print(f"    {token:10} -> index {fairseq_vocab[token]}")
+
+    # Show some sample regular tokens
+    regular_tokens = [k for k in fairseq_vocab.keys() if k not in special_tokens][:10]
+    print(f"\n  Sample regular tokens (first 10):")
+    for token in regular_tokens[:5]:
+        print(f"    {token:20} -> index {fairseq_vocab[token]}")
+
+    print(f"\n  Expected vocab size: 248,161 (248,156 from dict.txt + 5 special tokens)")
+    print(f"  Actual vocab size:   {vocab_size:,}")
+    if vocab_size == 248161:
+        print(f"  ✓ Vocabulary size matches!")
+    else:
+        print(f"  ⚠️  Warning: Size mismatch!")
 
     # Create output directory
     output_path = Path(output_dir)
