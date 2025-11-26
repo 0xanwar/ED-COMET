@@ -174,9 +174,17 @@ class SummarizationModule(BaseTransformer):
         pad_token_id = self.tokenizer.pad_token_id
         source_ids, source_mask, y = Seq2SeqDataset.trim_seq2seq_batch(batch, pad_token_id)
         t0 = time.time()
+
+        # Determine max_length based on split
+        # Use val/test max_target_length for generation
+        max_length = self.target_lens.get("val", self.hparams.max_target_length)
+
         generated_ids = self.model.generate(
             input_ids=source_ids,
             attention_mask=source_mask,
+            max_length=max_length,
+            num_beams=4,
+            early_stopping=True,
             use_cache=True,
             decoder_start_token_id=self.decoder_start_token_id,
         )
