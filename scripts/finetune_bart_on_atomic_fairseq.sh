@@ -93,20 +93,40 @@ def read_dict(path):
             vocab.append(tok)
     return vocab
 
-vocab = read_dict(dict_path)
-vocab_set = set(vocab)
-missing = [t for t in tokens if t not in vocab_set]
-
-out_dict.parent.mkdir(parents=True, exist_ok=True)
-with out_dict.open("w", encoding="utf-8") as f:
-    with dict_path.open("r", encoding="utf-8") as src:
-        for line in src:
-            f.write(line)
-    for t in missing:
-        f.write(f"{t} 1\n")
+def load_dict_from_checkpoint(path):
+    try:
+        from fairseq import checkpoint_utils
+        models, cfg, task = checkpoint_utils.load_model_ensemble_and_task([str(path)], strict=False)
+        return task.source_dictionary
+    except Exception as exc:
+        print(f"Warning: could not load dictionary from checkpoint: {exc}")
+        return None
 
 ckpt = torch.load(ckpt_path, map_location="cpu")
 state = ckpt["model"] if "model" in ckpt else ckpt
+
+d = load_dict_from_checkpoint(ckpt_path)
+if d is not None:
+    orig_vocab_size = len(d)
+    missing = [t for t in tokens if d.index(t) == d.unk()]
+    for t in missing:
+        d.add_symbol(t)
+    new_vocab_size = len(d)
+    out_dict.parent.mkdir(parents=True, exist_ok=True)
+    d.save(str(out_dict))
+else:
+    vocab = read_dict(dict_path)
+    vocab_set = set(vocab)
+    missing = [t for t in tokens if t not in vocab_set]
+    orig_vocab_size = len(vocab)
+    new_vocab_size = orig_vocab_size + len(missing)
+    out_dict.parent.mkdir(parents=True, exist_ok=True)
+    with out_dict.open("w", encoding="utf-8") as f:
+        with dict_path.open("r", encoding="utf-8") as src:
+            for line in src:
+                f.write(line)
+        for t in missing:
+            f.write(f"{t} 1\n")
 
 def expand_weight(key, new_size):
     if key not in state:
@@ -121,9 +141,6 @@ def expand_weight(key, new_size):
     new_w[:old_size] = w
     new_w[old_size:] = 0.02 * torch.randn(new_size - old_size, dim)
     state[key] = new_w
-
-orig_vocab_size = len(vocab)
-new_vocab_size = orig_vocab_size + len(missing)
 
 if "encoder.embed_tokens.weight" in state:
     old = state["encoder.embed_tokens.weight"].shape[0]
