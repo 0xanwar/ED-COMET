@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Allow KEY=VALUE args to act as env overrides.
+for kv in "$@"; do
+  if [[ "$kv" == *=* ]]; then
+    export "$kv"
+  fi
+done
+
 # Evaluate a fairseq checkpoint and append ROUGE to a log file.
 
 FAIRSEQ_GENERATE=${FAIRSEQ_GENERATE:-fairseq-generate}

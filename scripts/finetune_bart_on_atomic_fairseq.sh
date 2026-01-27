@@ -28,6 +28,8 @@ SAVE_DIR=${SAVE_DIR:-"./checkpoints/comet_finetune_fairseq"}         # output ch
 
 # Optional: expand vocab to include COMET tokens
 EXPAND_TOKENS=${EXPAND_TOKENS:-1}
+EXPAND_FROM_DATA=${EXPAND_FROM_DATA:-0}
+MIN_FREQ=${MIN_FREQ:-5}
 EXPANDED_CKPT=${EXPANDED_CKPT:-"./checkpoints/checkpoint_best_comet.pt"}
 EXPANDED_DICT=${EXPANDED_DICT:-"./data-bin/atomic_bart/dict_comet.txt"}
 
@@ -69,21 +71,27 @@ fi
 DICT_TO_USE="$DICT_PATH"
 CKPT_TO_USE="$CKPT_PATH"
 
-if [[ "$EXPAND_TOKENS" -eq 1 ]]; then
-  echo "Step 0: Expanding vocab with COMET tokens..."
-  CKPT_PATH="$CKPT_PATH" DICT_PATH="$DICT_PATH" \
+if [[ "$EXPAND_TOKENS" -eq 1 || "$EXPAND_FROM_DATA" -eq 1 ]]; then
+  echo "Step 0: Expanding vocab..."
+  CKPT_PATH="$CKPT_PATH" DICT_PATH="$DICT_PATH" ATOMIC_BART_DATA="$ATOMIC_BART_DATA" \
+  EXPAND_TOKENS="$EXPAND_TOKENS" EXPAND_FROM_DATA="$EXPAND_FROM_DATA" MIN_FREQ="$MIN_FREQ" \
   EXPANDED_CKPT="$EXPANDED_CKPT" EXPANDED_DICT="$EXPANDED_DICT" \
   $PYTHON_BIN - <<'PY'
 import os
 from pathlib import Path
 import torch
+from collections import Counter
 
 ckpt_path = Path(os.environ["CKPT_PATH"])
 dict_path = Path(os.environ["DICT_PATH"])
+data_dir = Path(os.environ["ATOMIC_BART_DATA"])
+expand_tokens = os.environ.get("EXPAND_TOKENS", "1") == "1"
+expand_from_data = os.environ.get("EXPAND_FROM_DATA", "0") == "1"
+min_freq = int(os.environ.get("MIN_FREQ", "5"))
 out_ckpt = Path(os.environ["EXPANDED_CKPT"])
 out_dict = Path(os.environ["EXPANDED_DICT"])
 
-tokens = [
+special_tokens = [
     "PersonX", "PersonY", "PersonZ", "___", "[GEN]",
     "AtLocation", "CapableOf", "Causes", "CausesDesire", "CreatedBy",
     "DefinedAs", "DesireOf", "Desires", "HasA", "HasFirstSubevent",
@@ -117,31 +125,66 @@ def load_dict_from_checkpoint(path):
         print(f"Warning: could not load dictionary from checkpoint: {exc}")
         return None
 
+def iter_data_tokens(data_dir):
+    counts = Counter()
+    files = [
+        data_dir / "train.source",
+        data_dir / "train.target",
+        data_dir / "val.source",
+        data_dir / "val.target",
+        data_dir / "test.source",
+        data_dir / "test.target",
+    ]
+    for path in files:
+        if not path.exists():
+            continue
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                for tok in line.strip().split():
+                    counts[tok] += 1
+    return counts
+
 ckpt = torch.load(ckpt_path, map_location="cpu")
 state = ckpt["model"] if "model" in ckpt else ckpt
 
 d = load_dict_from_checkpoint(ckpt_path)
 if d is not None:
     orig_vocab_size = len(d)
-    missing = [t for t in tokens if d.index(t) == d.unk()]
-    for t in missing:
+    to_add = []
+    if expand_tokens:
+        to_add.extend([t for t in special_tokens if d.index(t) == d.unk()])
+    if expand_from_data:
+        counts = iter_data_tokens(data_dir)
+        data_tokens = [t for t, c in counts.items() if c >= min_freq]
+        data_tokens = sorted(data_tokens, key=lambda x: (-counts[x], x))
+        to_add.extend([t for t in data_tokens if d.index(t) == d.unk()])
+    for t in to_add:
         d.add_symbol(t)
     new_vocab_size = len(d)
     out_dict.parent.mkdir(parents=True, exist_ok=True)
     d.save(str(out_dict))
+    added_tokens = to_add
 else:
     vocab = read_dict(dict_path)
     vocab_set = set(vocab)
-    missing = [t for t in tokens if t not in vocab_set]
+    to_add = []
+    if expand_tokens:
+        to_add.extend([t for t in special_tokens if t not in vocab_set])
+    if expand_from_data:
+        counts = iter_data_tokens(data_dir)
+        data_tokens = [t for t, c in counts.items() if c >= min_freq]
+        data_tokens = sorted(data_tokens, key=lambda x: (-counts[x], x))
+        to_add.extend([t for t in data_tokens if t not in vocab_set])
     orig_vocab_size = len(vocab)
-    new_vocab_size = orig_vocab_size + len(missing)
+    new_vocab_size = orig_vocab_size + len(to_add)
     out_dict.parent.mkdir(parents=True, exist_ok=True)
     with out_dict.open("w", encoding="utf-8") as f:
         with dict_path.open("r", encoding="utf-8") as src:
             for line in src:
                 f.write(line)
-        for t in missing:
+        for t in to_add:
             f.write(f"{t} 1\n")
+    added_tokens = to_add
 
 def expand_weight(key, new_size):
     if key not in state:
@@ -174,7 +217,9 @@ else:
 out_ckpt.parent.mkdir(parents=True, exist_ok=True)
 torch.save(ckpt, out_ckpt)
 
-print(f"Added tokens: {missing}")
+print(f"Added tokens: {added_tokens[:50]}")
+if len(added_tokens) > 50:
+    print(f"... plus {len(added_tokens) - 50} more")
 print(f"Expanded vocab: {orig_vocab_size} -> {new_vocab_size}")
 print(f"Saved: {out_ckpt}")
 print(f"Dict: {out_dict}")

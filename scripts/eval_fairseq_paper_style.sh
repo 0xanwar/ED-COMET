@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Allow KEY=VALUE args to act as env overrides.
+for kv in "$@"; do
+  if [[ "$kv" == *=* ]]; then
+    export "$kv"
+  fi
+done
+
 # Paper-style evaluation (system_eval) for a fairseq checkpoint.
 
 FAIRSEQ_INTERACTIVE=${FAIRSEQ_INTERACTIVE:-fairseq-interactive}
