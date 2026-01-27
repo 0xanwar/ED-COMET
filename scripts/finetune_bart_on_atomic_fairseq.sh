@@ -30,6 +30,14 @@ EXPAND_TOKENS=${EXPAND_TOKENS:-1}
 EXPANDED_CKPT=${EXPANDED_CKPT:-"./checkpoints/checkpoint_best_comet.pt"}
 EXPANDED_DICT=${EXPANDED_DICT:-"./data-bin/atomic_bart/dict_comet.txt"}
 
+# Optional: per-epoch eval
+EVAL_EACH_EPOCH=${EVAL_EACH_EPOCH:-0}
+EVAL_SPLIT=${EVAL_SPLIT:-"valid"}
+EVAL_OUT_DIR=${EVAL_OUT_DIR:-"./results_fairseq"}
+EVAL_BEAM=${EVAL_BEAM:-1}
+EVAL_MAX_LEN_B=${EVAL_MAX_LEN_B:-24}
+EVAL_LOG_FILE=${EVAL_LOG_FILE:-"$EVAL_OUT_DIR/rouge_log.jsonl"}
+
 # Train hyperparams
 ARCH=${ARCH:-bart_large}
 NUM_GPUS=${NUM_GPUS:-1}
@@ -218,3 +226,21 @@ echo "Finetune complete: $SAVE_DIR"
 echo "=================================================="
 echo "Optional generation:"
 echo "  $FAIRSEQ_GENERATE $DATA_BIN --path $SAVE_DIR/checkpoint_best.pt --source-lang source --target-lang target --beam 5 --max-len-b 24"
+
+if [[ "$EVAL_EACH_EPOCH" -eq 1 ]]; then
+  echo ""
+  echo "Running per-epoch eval on split '$EVAL_SPLIT'..."
+  mkdir -p "$EVAL_OUT_DIR"
+  while IFS= read -r ckpt; do
+    bash scripts/eval_fairseq_checkpoint.sh \
+      FAIRSEQ_GENERATE="$FAIRSEQ_GENERATE" \
+      DATA_BIN="$DATA_BIN" \
+      CKPT="$ckpt" \
+      SPLIT="$EVAL_SPLIT" \
+      OUT_DIR="$EVAL_OUT_DIR" \
+      LOG_FILE="$EVAL_LOG_FILE" \
+      BEAM="$EVAL_BEAM" \
+      MAX_LEN_B="$EVAL_MAX_LEN_B"
+  done < <(ls "$SAVE_DIR"/checkpoint*.pt 2>/dev/null | sort -V)
+  echo "Eval log: $EVAL_LOG_FILE"
+fi
