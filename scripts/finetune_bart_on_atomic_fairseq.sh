@@ -37,6 +37,8 @@ MAX_EPOCH=${MAX_EPOCH:-10}
 MAX_TOKENS=${MAX_TOKENS:-2048}
 UPDATE_FREQ=${UPDATE_FREQ:-4}
 LR=${LR:-3e-5}
+LR_SCHEDULER=${LR_SCHEDULER:-fixed}
+TOTAL_NUM_UPDATE=${TOTAL_NUM_UPDATE:-}
 
 if [[ ! -f "$CKPT_PATH" ]]; then
   echo "Missing checkpoint: $CKPT_PATH"
@@ -179,19 +181,30 @@ $FAIRSEQ_PREPROCESS \
   --workers 8
 
 echo "Step 2: Finetuning..."
-LAUNCH=""
-if [[ "$NUM_GPUS" -gt 1 ]]; then
-  LAUNCH="torchrun --nproc_per_node $NUM_GPUS"
+if [[ "$LR_SCHEDULER" == "polynomial_decay" && -z "$TOTAL_NUM_UPDATE" ]]; then
+  echo "LR_SCHEDULER=polynomial_decay requires TOTAL_NUM_UPDATE. Set TOTAL_NUM_UPDATE or use LR_SCHEDULER=fixed."
+  exit 1
 fi
 
-$LAUNCH $FAIRSEQ_TRAIN "$DATA_BIN" \
+if [[ "$NUM_GPUS" -gt 1 ]]; then
+  if [[ "$FAIRSEQ_TRAIN" == "fairseq-train" ]]; then
+    TRAIN_CMD=(torchrun --nproc_per_node "$NUM_GPUS" --module fairseq_cli.train)
+  else
+    TRAIN_CMD=(torchrun --nproc_per_node "$NUM_GPUS" $FAIRSEQ_TRAIN)
+  fi
+else
+  TRAIN_CMD=($FAIRSEQ_TRAIN)
+fi
+
+"${TRAIN_CMD[@]}" "$DATA_BIN" \
   --restore-file "$CKPT_TO_USE" \
   --arch "$ARCH" \
   --task translation \
   --source-lang source --target-lang target \
   --criterion label_smoothed_cross_entropy --label-smoothing 0.1 \
   --optimizer adam --adam-betas '(0.9,0.98)' --adam-eps 1e-08 \
-  --lr "$LR" --lr-scheduler polynomial_decay --warmup-updates 500 \
+  --lr "$LR" --lr-scheduler "$LR_SCHEDULER" --warmup-updates 500 \
+  ${TOTAL_NUM_UPDATE:+--total-num-update "$TOTAL_NUM_UPDATE"} \
   --max-tokens "$MAX_TOKENS" --update-freq "$UPDATE_FREQ" \
   --dropout 0.1 --attention-dropout 0.1 \
   --weight-decay 0.01 --clip-norm 0.1 \
