@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Allow KEY=VALUE args to act as env overrides.
+for kv in "$@"; do
+  if [[ "$kv" == *=* ]]; then
+    export "$kv"
+  fi
+done
+
 echo "=================================================="
 echo "COMET ATOMIC finetune with fairseq (.pt checkpoint)"
 echo "=================================================="
