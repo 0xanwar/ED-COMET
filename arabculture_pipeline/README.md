@@ -136,3 +136,17 @@ output_dir/
 3) Evaluate with your gold Egyptian set (86 events).
 
 If you want a LoRA-only training script or a merging script, I can add it.
+
+## Logging + progress
+
+The pipeline writes logs to:
+
+```
+output_dir/run.log
+```
+
+Progress is reported per batch. You can change the batch size:
+
+```
+--batch-size 256
+```

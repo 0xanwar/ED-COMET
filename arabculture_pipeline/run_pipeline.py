@@ -3,6 +3,7 @@
 import argparse
 import gc
 import json
+import logging
 import os
 import random
 import re
@@ -61,6 +62,8 @@ COUNTRY_CODE = {
     "Tunisia": "TUN",
     "Sudan": "SDN",
 }
+
+LOGGER = logging.getLogger("arabculture_pipeline")
 
 
 @dataclass
@@ -149,14 +152,24 @@ def load_arabculture(
     countries: Iterable[str],
     keep_country_yes: bool,
     keep_discard_no: bool,
-) -> List[Example]:
+):
     examples: List[Example] = []
+    stats = {
+        "total": 0,
+        "kept": 0,
+        "filtered_discard": 0,
+        "filtered_country": 0,
+    }
     for country in countries:
         ds = load_dataset("MBZUAI/ArabCulture", country, split="test")
+        LOGGER.info("Loaded %s rows for %s", len(ds), country)
         for row in ds:
+            stats["total"] += 1
             if keep_discard_no and str(row.get("should_discard", "No")).strip() != "No":
+                stats["filtered_discard"] += 1
                 continue
             if keep_country_yes and str(row.get("relevant_to_this_country", "Yes")).strip() != "Yes":
+                stats["filtered_country"] += 1
                 continue
             options = row.get("options", {}) or {}
             answer_key = row.get("answer_key", {}) or {}
@@ -186,7 +199,8 @@ def load_arabculture(
                     scenario=scenario,
                 )
             )
-    return examples
+            stats["kept"] += 1
+    return examples, stats
 
 
 def build_tags(country: str, region: str, add_region: bool, add_country: bool) -> str:
@@ -219,6 +233,7 @@ def generate_heads(
     add_region: bool,
     add_country: bool,
     temperature: float,
+    batch_size: int,
 ) -> List[HeadResult]:
     system = (
         "You convert Arabic scenarios into ATOMIC-style English heads."
@@ -243,13 +258,20 @@ def generate_heads(
         prompts.append(format_chat(tokenizer, system, user))
 
     params = SamplingParams(temperature=temperature, top_p=0.9, max_tokens=128)
-    outputs = llm.generate(prompts, params)
+    outputs = []
+    total = len(prompts)
+    for start in range(0, total, batch_size):
+        batch = prompts[start : start + batch_size]
+        outputs.extend(llm.generate(batch, params))
+        LOGGER.info("Heads: %d/%d", min(start + batch_size, total), total)
 
     results: List[HeadResult] = []
+    parse_fail = 0
     for ex, out in zip(examples, outputs):
         text = out.outputs[0].text
         obj = extract_json(text)
         if not obj or "head" not in obj:
+            parse_fail += 1
             continue
         head = obj["head"].strip()
         if head:
@@ -260,6 +282,8 @@ def generate_heads(
             continue
         tags = build_tags(ex.country, ex.region, add_region, add_country)
         results.append(HeadResult(example=ex, head=head, tags=tags))
+
+    LOGGER.info("Heads parsed: %d/%d (failed %d)", len(results), len(outputs), parse_fail)
 
     del llm
     gc.collect()
@@ -342,19 +366,24 @@ def generate_tails(
     base_tails: int,
     extra_tail: bool,
     overlap: float,
+    batch_size: int,
 ) -> List[TailResult]:
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     llm = make_llm(model_id, tp_size, max_model_len, gpu_mem_util)
 
-    def run_batch(prompts: List[str], temperature: float) -> List[dict]:
+    def run_batch(prompts: List[str], temperature: float, label: str) -> List[dict]:
         max_tokens = 700 if temperature <= 0.6 else 300
         params = SamplingParams(temperature=temperature, top_p=0.9, max_tokens=max_tokens)
-        outputs = llm.generate(prompts, params)
         parsed = []
-        for out in outputs:
-            text = out.outputs[0].text
-            obj = extract_json(text)
-            parsed.append(obj or {})
+        total = len(prompts)
+        for start in range(0, total, batch_size):
+            batch = prompts[start : start + batch_size]
+            outputs = llm.generate(batch, params)
+            for out in outputs:
+                text = out.outputs[0].text
+                obj = extract_json(text)
+                parsed.append(obj or {})
+            LOGGER.info("%s: %d/%d", label, min(start + batch_size, total), total)
         return parsed
 
     prompts = [
@@ -366,18 +395,28 @@ def generate_tails(
         for h in heads
     ]
 
-    base_objs = run_batch(prompts, temperature=0.6)
+    base_objs = run_batch(prompts, temperature=0.6, label="Base tails")
     results: List[TailResult] = []
 
     good_heads: List[HeadResult] = []
+    base_fail = 0
     for head, obj in zip(heads, base_objs):
         if not obj:
+            base_fail += 1
             continue
         filtered = filter_tails(head.head, obj, min_tails=base_tails, overlap=overlap)
         if not filtered:
+            base_fail += 1
             continue
         results.append(TailResult(head_result=head, tails=filtered))
         good_heads.append(head)
+
+    LOGGER.info(
+        "Base tails kept: %d/%d (failed %d)",
+        len(results),
+        len(heads),
+        base_fail,
+    )
 
     if extra_tail and good_heads:
         extra_prompts = [
@@ -388,7 +427,7 @@ def generate_tails(
             )
             for h in good_heads
         ]
-        extra_objs = run_batch(extra_prompts, temperature=0.7)
+        extra_objs = run_batch(extra_prompts, temperature=0.7, label="Extra tails")
         by_key = {hr.head_result.head.lower(): hr for hr in results}
         for idx, obj in enumerate(extra_objs):
             if not obj:
@@ -515,10 +554,21 @@ def main():
     parser.add_argument("--heads-only", action="store_true")
     parser.add_argument("--tails-only", action="store_true")
     parser.add_argument("--heads-file", default=None)
+    parser.add_argument("--batch-size", type=int, default=256)
 
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+
+    log_path = os.path.join(args.output_dir, "run.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[logging.FileHandler(log_path), logging.StreamHandler()],
+    )
+
+    LOGGER.info("Starting pipeline")
+    LOGGER.info("Heads only: %s, Tails only: %s", args.heads_only, args.tails_only)
 
     if args.tails_only and not args.heads_file:
         raise SystemExit("--tails-only requires --heads-file")
@@ -526,9 +576,10 @@ def main():
     if args.tails_only:
         heads = read_heads(args.heads_file)
     else:
-        examples = load_arabculture(
+        examples, stats = load_arabculture(
             args.countries, args.keep_country_yes, args.keep_discard_no
         )
+        LOGGER.info("Filtered rows: %s", stats)
         heads = generate_heads(
             examples,
             model_id=args.head_model,
@@ -538,6 +589,7 @@ def main():
             add_region=args.add_region_tag,
             add_country=args.add_country_tag,
             temperature=0.6,
+            batch_size=args.batch_size,
         )
         heads_file = args.heads_file or os.path.join(args.output_dir, "heads.jsonl")
         write_heads(heads_file, heads)
@@ -561,6 +613,7 @@ def main():
         base_tails=args.base_tails,
         extra_tail=args.add_third_tail,
         overlap=args.overlap_threshold,
+        batch_size=args.batch_size,
     )
 
     tails = dedupe_by_head(tails)
@@ -601,6 +654,7 @@ def main():
     }
     with open(os.path.join(args.output_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+    LOGGER.info("Done. Summary: %s", summary)
 
 
 if __name__ == "__main__":
