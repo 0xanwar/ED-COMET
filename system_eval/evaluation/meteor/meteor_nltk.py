@@ -5,8 +5,8 @@
 
 import os
 import sys
-import nltk
 from nltk.translate.meteor_score import meteor_score
+from typing import Any
 
 # Assumes meteor-1.5.jar is in the same directory as meteor.py.  Change as needed.
 #METEOR_JAR = 'meteor-1.5.jar'
@@ -22,6 +22,17 @@ class Meteor:
         imgIds = gts.keys()
         scores = []
 
+        class _DummyWordNet:
+            def synsets(self, *args: Any, **kwargs: Any):
+                return []
+
+        try:
+            from nltk.corpus import wordnet as wn
+            wn.synsets("dog")
+            wordnet = wn
+        except Exception:
+            wordnet = _DummyWordNet()
+
         for i in imgIds:
             assert(len(res[i]) == 1)
             refs = gts[i]
@@ -30,7 +41,10 @@ class Meteor:
                 refs = [refs]
             tok_refs = [r.split() if isinstance(r, str) else list(r) for r in refs]
             tok_hyp = hyp.split() if isinstance(hyp, str) else list(hyp)
-            score = round(meteor_score(tok_refs, tok_hyp), 4)
+            try:
+                score = round(meteor_score(tok_refs, tok_hyp, wordnet=wordnet), 4)
+            except TypeError:
+                score = round(meteor_score(tok_refs, tok_hyp), 4)
             scores.append(score)
         #print('{}\n'.format(eval_line))
         #self.meteor_p.stdin.write('{}\n'.format(eval_line))
