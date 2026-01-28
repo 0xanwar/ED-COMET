@@ -31,7 +31,7 @@ mkdir -p "$SYSTEM_EVAL_DIR/results"
 
 TEST_SOURCE="$OUT_DIR/test.source"
 if [[ ! -f "$TEST_SOURCE" || "$FORCE_BUILD" -eq 1 ]]; then
-  $PYTHON_BIN - <<'PY'
+  TEST_SOURCE="$TEST_SOURCE" SYSTEM_EVAL_DIR="$SYSTEM_EVAL_DIR" $PYTHON_BIN - <<'PY'
 from pathlib import Path
 import os
 
@@ -59,7 +59,7 @@ $FAIRSEQ_INTERACTIVE "$DATA_BIN" \
   --beam "$BEAM" --max-len-b "$MAX_LEN_B" --max-len-a 0 \
   > "$GEN_FILE"
 
-$PYTHON_BIN - <<'PY'
+GEN_FILE="$GEN_FILE" JSONL_FILE="$JSONL_FILE" $PYTHON_BIN - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -83,7 +83,7 @@ $PYTHON_BIN automatic_eval.py --input_file "$JSONL_FILE"
 popd >/dev/null
 
 RESULT_FILE="$SYSTEM_EVAL_DIR/results/${CKPT_BASE}_scores.jsonl"
-$PYTHON_BIN - <<'PY'
+RESULT_FILE="$RESULT_FILE" LOG_FILE="$LOG_FILE" CKPT="$CKPT" $PYTHON_BIN - <<'PY'
 import json
 import os
 from pathlib import Path
