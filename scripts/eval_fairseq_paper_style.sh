@@ -82,7 +82,8 @@ pushd "$SYSTEM_EVAL_DIR" >/dev/null
 $PYTHON_BIN automatic_eval.py --input_file "$JSONL_FILE"
 popd >/dev/null
 
-RESULT_FILE="$SYSTEM_EVAL_DIR/results/${CKPT_BASE}_scores.jsonl"
+RESULT_BASE="$(basename "$JSONL_FILE" .jsonl)_gens"
+RESULT_FILE="$SYSTEM_EVAL_DIR/results/${RESULT_BASE}_scores.jsonl"
 RESULT_FILE="$RESULT_FILE" LOG_FILE="$LOG_FILE" CKPT="$CKPT" $PYTHON_BIN - <<'PY'
 import json
 import os
