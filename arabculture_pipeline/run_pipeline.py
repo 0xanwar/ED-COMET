@@ -98,6 +98,27 @@ def normalize_text(text: str) -> str:
 GENERIC_NORM = {normalize_text(x) for x in GENERIC_PHRASES}
 
 
+def strip_bullets(text: str) -> str:
+    return re.sub(r"^[\\s\\-\\*\\d\\)\\.\\u2022]+", "", text).strip()
+
+
+def clean_tail(text: str) -> str:
+    text = strip_bullets(text)
+    text = text.strip().strip(" .;:!?,")
+    return text
+
+
+def tail_too_short(text: str, rel: str) -> bool:
+    norm_tokens = normalize_text(text).split()
+    if not norm_tokens:
+        return True
+    if len(norm_tokens) == 1 and len(norm_tokens[0]) < 3:
+        return True
+    if rel in {"xIntent", "xNeed", "xWant", "oWant"} and len(norm_tokens) < 2:
+        return True
+    return len(text.strip()) < 3
+
+
 def jaccard_overlap(a: str, b: str) -> float:
     def tokens(s: str) -> set:
         return {t for t in normalize_text(s).split() if t not in {"personx", "persony", "personz"}}
@@ -236,7 +257,7 @@ def generate_heads(
     batch_size: int,
 ) -> List[HeadResult]:
     system = (
-        "You convert Arabic scenarios into ATOMIC-style English heads."
+        "You are a strict data generator. Return only valid JSON, no extra text."
     )
     user_tpl = (
         "Convert this Arabic scenario into ONE ATOMIC-style head event in English.\n\n"
@@ -248,6 +269,7 @@ def generate_heads(
         "- One event, one sentence.\n"
         "- No stereotypes, no moral judgement.\n"
         "- Include cultural details only if explicitly implied.\n"
+        "- Do not end the head with punctuation.\n"
     )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
@@ -275,7 +297,7 @@ def generate_heads(
             continue
         head = obj["head"].strip()
         if head:
-            head = head.strip()
+            head = head.strip().rstrip(".!?")
             if not head.lower().startswith("personx"):
                 head = "PersonX " + re.sub(r"^personx\s*", "", head, flags=re.I).strip()
         if not head:
@@ -302,6 +324,9 @@ def build_tails_prompt(head: str, tags: str, n_tails: int) -> str:
         "- Distinct tails; no paraphrases of the head.\n"
         "- Avoid generic tails (happy/sad) unless grounded.\n"
         "- No \"none\".\n"
+        "- xIntent/xNeed/xWant/oWant should start with \"to\".\n"
+        "- xAttr should be short traits (1-3 words, adjectives).\n"
+        "- Avoid single-letter outputs or list markers.\n"
     )
 
 
@@ -311,8 +336,10 @@ def filter_tails(head: str, tails: Dict[str, List[str]], min_tails: int, overlap
         rel_tails = []
         seen_norm = set()
         for t in tails.get(rel, []):
-            t = t.strip()
+            t = clean_tail(t)
             if not t:
+                continue
+            if tail_too_short(t, rel):
                 continue
             if normalize_text(t) in GENERIC_NORM:
                 continue
@@ -338,8 +365,10 @@ def filter_tails_partial(head: str, tails: Dict[str, List[str]], overlap: float)
         rel_tails = []
         seen_norm = set()
         for t in tails.get(rel, []) or []:
-            t = t.strip()
+            t = clean_tail(t)
             if not t:
+                continue
+            if tail_too_short(t, rel):
                 continue
             if normalize_text(t) in GENERIC_NORM:
                 continue
