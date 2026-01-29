@@ -150,3 +150,17 @@ Progress is reported per batch. You can change the batch size:
 ```
 --batch-size 256
 ```
+
+## Quality modes
+
+Use strict filtering + relation rules for higher-quality tails:
+
+```bash
+--quality-mode strict
+```
+
+You can also lower the sampling temperature for cleaner generations:
+
+```bash
+--tail-temp-base 0.5 --tail-temp-extra 0.6
+```

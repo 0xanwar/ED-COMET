@@ -127,12 +127,28 @@ def tail_too_short(text: str, rel: str) -> bool:
     return len(text.strip()) < 3
 
 
-def tail_low_alpha_ratio(text: str) -> bool:
-    letters = sum(ch.isalpha() for ch in text)
-    return (letters / max(1, len(text))) < 0.6
+def tail_low_alpha_ratio(text: str, threshold: float) -> bool:
+    alnum = [ch for ch in text if ch.isalnum()]
+    if not alnum:
+        return True
+    letters = sum(ch.isalpha() for ch in alnum)
+    return (letters / max(1, len(alnum))) < threshold
 
 
-def normalize_tail_for_relation(rel: str, text: str) -> str:
+@dataclass
+class QualityRules:
+    require_to: bool
+    react_min_tokens: int
+    alpha_ratio: float
+
+
+def get_quality_rules(mode: str) -> QualityRules:
+    if mode == "strict":
+        return QualityRules(require_to=True, react_min_tokens=3, alpha_ratio=0.7)
+    return QualityRules(require_to=False, react_min_tokens=2, alpha_ratio=0.6)
+
+
+def normalize_tail_for_relation(rel: str, text: str, rules: QualityRules) -> str:
     text = clean_tail(text)
     if not text:
         return ""
@@ -387,20 +403,26 @@ def build_tails_prompt(head: str, tags: str, n_tails: int) -> str:
     )
 
 
-def filter_tails(head: str, tails: Dict[str, List[str]], min_tails: int, overlap: float) -> Optional[Dict[str, List[str]]]:
+def filter_tails(
+    head: str,
+    tails: Dict[str, List[str]],
+    min_tails: int,
+    overlap: float,
+    rules: QualityRules,
+) -> Optional[Dict[str, List[str]]]:
     cleaned: Dict[str, List[str]] = {}
     for rel in RELATIONS:
         rel_tails = []
         seen_norm = set()
         for t in tails.get(rel, []):
-            t = normalize_tail_for_relation(rel, t)
+            t = normalize_tail_for_relation(rel, t, rules)
             if not t:
                 continue
             if tail_too_short(t, rel):
                 continue
             if GENERIC_EMOTION_RE.search(t):
                 continue
-            if tail_low_alpha_ratio(t):
+            if tail_low_alpha_ratio(t, rules.alpha_ratio):
                 continue
             if normalize_text(t) in GENERIC_NORM:
                 continue
@@ -410,6 +432,8 @@ def filter_tails(head: str, tails: Dict[str, List[str]], min_tails: int, overlap
             if rel in ATTR_RELATIONS:
                 if len(norm.split()) > 3:
                     continue
+            if rel in REACT_RELATIONS and len(norm.split()) < rules.react_min_tokens:
+                continue
             if jaccard_overlap(head, t) >= overlap:
                 continue
             if t.lower() == "none":
@@ -425,20 +449,25 @@ def filter_tails(head: str, tails: Dict[str, List[str]], min_tails: int, overlap
     return cleaned
 
 
-def filter_tails_partial(head: str, tails: Dict[str, List[str]], overlap: float) -> Dict[str, List[str]]:
+def filter_tails_partial(
+    head: str,
+    tails: Dict[str, List[str]],
+    overlap: float,
+    rules: QualityRules,
+) -> Dict[str, List[str]]:
     cleaned: Dict[str, List[str]] = {}
     for rel in RELATIONS:
         rel_tails = []
         seen_norm = set()
         for t in tails.get(rel, []) or []:
-            t = normalize_tail_for_relation(rel, t)
+            t = normalize_tail_for_relation(rel, t, rules)
             if not t:
                 continue
             if tail_too_short(t, rel):
                 continue
             if GENERIC_EMOTION_RE.search(t):
                 continue
-            if tail_low_alpha_ratio(t):
+            if tail_low_alpha_ratio(t, rules.alpha_ratio):
                 continue
             if normalize_text(t) in GENERIC_NORM:
                 continue
@@ -448,6 +477,8 @@ def filter_tails_partial(head: str, tails: Dict[str, List[str]], overlap: float)
             if rel in ATTR_RELATIONS:
                 if len(norm.split()) > 3:
                     continue
+            if rel in REACT_RELATIONS and len(norm.split()) < rules.react_min_tokens:
+                continue
             if jaccard_overlap(head, t) >= overlap:
                 continue
             if t.lower() == "none":
@@ -471,12 +502,15 @@ def generate_tails(
     extra_tail: bool,
     overlap: float,
     batch_size: int,
+    rules: QualityRules,
+    base_temp: float,
+    extra_temp: float,
 ) -> List[TailResult]:
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     llm = make_llm(model_id, tp_size, max_model_len, gpu_mem_util)
 
     def run_batch(prompts: List[str], temperature: float, label: str) -> List[dict]:
-        max_tokens = 700 if temperature <= 0.6 else 300
+        max_tokens = 512 if temperature <= 0.6 else 700
         params = SamplingParams(temperature=temperature, top_p=0.9, max_tokens=max_tokens)
         parsed = []
         total = len(prompts)
@@ -500,7 +534,7 @@ def generate_tails(
         for h in heads
     ]
 
-    base_objs = run_batch(prompts, temperature=0.6, label="Base tails")
+    base_objs = run_batch(prompts, temperature=base_temp, label="Base tails")
     results: List[TailResult] = []
 
     good_heads: List[HeadResult] = []
@@ -509,7 +543,7 @@ def generate_tails(
         if not obj:
             base_fail += 1
             continue
-        filtered = filter_tails(head.head, obj, min_tails=base_tails, overlap=overlap)
+        filtered = filter_tails(head.head, obj, min_tails=base_tails, overlap=overlap, rules=rules)
         if not filtered:
             base_fail += 1
             continue
@@ -533,12 +567,12 @@ def generate_tails(
             )
             for h in good_heads
         ]
-        extra_objs = run_batch(extra_prompts, temperature=0.7, label="Extra tails")
+        extra_objs = run_batch(extra_prompts, temperature=extra_temp, label="Extra tails")
         by_key = {hr.head_result.head.lower(): hr for hr in results}
         for idx, obj in enumerate(extra_objs):
             if not obj:
                 continue
-            filtered = filter_tails_partial(good_heads[idx].head, obj, overlap=overlap)
+            filtered = filter_tails_partial(good_heads[idx].head, obj, overlap=overlap, rules=rules)
             if not filtered:
                 continue
             # merge
@@ -662,6 +696,9 @@ def main():
     parser.add_argument("--heads-file", default=None)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--max-head-words", type=int, default=16)
+    parser.add_argument("--quality-mode", choices=["standard", "strict"], default="standard")
+    parser.add_argument("--tail-temp-base", type=float, default=0.6)
+    parser.add_argument("--tail-temp-extra", type=float, default=0.7)
 
     args = parser.parse_args()
 
@@ -712,6 +749,7 @@ def main():
             json.dump(summary, f, indent=2)
         return
 
+    rules = get_quality_rules(args.quality_mode)
     tails = generate_tails(
         heads,
         model_id=args.tail_model,
@@ -722,6 +760,9 @@ def main():
         extra_tail=args.add_third_tail,
         overlap=args.overlap_threshold,
         batch_size=args.batch_size,
+        rules=rules,
+        base_temp=args.tail_temp_base,
+        extra_temp=args.tail_temp_extra,
     )
 
     tails = dedupe_by_head(tails)
