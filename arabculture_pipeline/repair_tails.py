@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import string
 from typing import Dict, List, Tuple
 
 from transformers import AutoTokenizer
@@ -13,6 +14,13 @@ try:
     from vllm import LLM, SamplingParams
 except Exception as exc:  # pragma: no cover
     raise SystemExit("vLLM is required. Install it first.") from exc
+
+try:
+    from wordfreq import zipf_frequency
+
+    WORD_FREQ_AVAILABLE = True
+except Exception:
+    WORD_FREQ_AVAILABLE = False
 
 RELATIONS = [
     "xIntent",
@@ -62,6 +70,23 @@ def looks_suspicious(text: str) -> bool:
         return True
     if len(short_bad) >= 2:
         return True
+    for tok in tokens:
+        if looks_like_missing_leading_letter(tok):
+            return True
+    return False
+
+
+def looks_like_missing_leading_letter(token: str) -> bool:
+    if not WORD_FREQ_AVAILABLE:
+        return False
+    if len(token) < 4:
+        return False
+    base = zipf_frequency(token, "en")
+    if base >= 2.0:
+        return False
+    for ch in string.ascii_lowercase:
+        if zipf_frequency(ch + token, "en") >= 4.0:
+            return True
     return False
 
 
