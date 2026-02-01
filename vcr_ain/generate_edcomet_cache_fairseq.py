@@ -3,6 +3,8 @@ import argparse
 import json
 from typing import Dict, List
 
+import torch
+
 
 def load_bart(model_dir: str, checkpoint_file: str, data_bin: str):
     from fairseq.models.bart import BARTModel
@@ -13,7 +15,7 @@ def load_bart(model_dir: str, checkpoint_file: str, data_bin: str):
     bart.eval()
     if bart.device.type != "cpu":
         return bart
-    return bart.cuda() if bart.is_cuda_available() else bart
+    return bart.cuda() if torch.cuda.is_available() else bart
 
 
 def generate_tails(bart, prompts: List[str], beam: int, max_len_b: int, min_len: int) -> List[str]:
@@ -78,7 +80,18 @@ def _write_batch(bart, batch, relations, args, fout):
                 max_len_b=args.max_len_b,
                 min_len=args.min_len,
             )
-            out[rel] = [t.strip() for t in tails if t.strip()]
+            seen = set()
+            unique = []
+            for t in tails:
+                t = t.strip()
+                if not t:
+                    continue
+                key = t.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(t)
+            out[rel] = unique
         fout.write(json.dumps(out, ensure_ascii=True) + "\n")
 
 

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from qwen_vl_utils import process_vision_info
 
 
 def extract_json(text: str) -> Dict[str, Any]:
@@ -95,8 +96,10 @@ def build_messages(image_path: str) -> List[Dict[str, Any]]:
 def generate_caption_entities(model, processor, image_path: str) -> Tuple[str, List[str]]:
     messages = build_messages(image_path)
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, _ = processor.process_vision_info(messages)
-    inputs = processor(text=[text], images=image_inputs, return_tensors="pt").to(model.device)
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=[text], images=image_inputs, videos=video_inputs, return_tensors="pt"
+    ).to(model.device)
     out = model.generate(**inputs, max_new_tokens=128, do_sample=False)
     decoded = processor.batch_decode(out, skip_special_tokens=True)[0]
     obj = extract_json(decoded)

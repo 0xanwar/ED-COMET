@@ -2,10 +2,12 @@
 import argparse
 import json
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 import torch
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from qwen_vl_utils import process_vision_info
 
 
 def build_messages(prompt: str, image_path: str) -> List[Dict[str, Any]]:
@@ -24,11 +26,16 @@ def build_messages(prompt: str, image_path: str) -> List[Dict[str, Any]]:
 def generate_letter(model, processor, prompt: str, image_path: str, max_new_tokens: int) -> str:
     messages = build_messages(prompt, image_path)
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, _ = processor.process_vision_info(messages)
-    inputs = processor(text=[text], images=image_inputs, return_tensors="pt").to(model.device)
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=[text], images=image_inputs, videos=video_inputs, return_tensors="pt"
+    ).to(model.device)
     out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
     decoded = processor.batch_decode(out, skip_special_tokens=True)[0]
-    return decoded.strip().split()[-1]
+    letters = re.findall(r"\b([A-D])\b", decoded)
+    if letters:
+        return letters[-1]
+    return decoded.strip().split()[-1] if decoded.strip() else ""
 
 
 def score_letters(
@@ -36,8 +43,10 @@ def score_letters(
 ) -> Tuple[str, Dict[str, float]]:
     messages = build_messages(prompt, image_path)
     base_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, _ = processor.process_vision_info(messages)
-    inputs = processor(text=[base_text], images=image_inputs, return_tensors="pt").to(model.device)
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=[base_text], images=image_inputs, videos=video_inputs, return_tensors="pt"
+    ).to(model.device)
 
     scores: Dict[str, float] = {}
     for letter in letters:

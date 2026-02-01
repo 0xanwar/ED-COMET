@@ -109,6 +109,82 @@ python vcr_ain/ain_infer_vcr.py \
   --mode generate
 ```
 
+## One-command inference (production-style)
+
+```bash
+python vcr_ain/run_edvcr_infer.py \
+  --vcr-jsonl /home/ahmedjaheen/data/vcr1/val.jsonl \
+  --images-dir /home/ahmedjaheen/data/vcr1/vcr1images \
+  --out-dir /home/ahmedjaheen/data/vcr1_out \
+  --ain-model MBZUAI/AIN \
+  --head-builder ain \
+  --edcomet-model-dir /home/ahmedjaheen/Abdelrahman/GD-COMET-Replication/ED-COMET/checkpoints/comet_finetune_arabculture_mix \
+  --edcomet-checkpoint checkpoint_last.pt \
+  --edcomet-data-bin /home/ahmedjaheen/Abdelrahman/GD-COMET-Replication/ED-COMET/data-bin/atomic_mix_arabculture_30 \
+  --relations xIntent,xNeed,xReact,xEffect,oReact,oEffect \
+  --num-tails 2 \
+  --k 5 \
+  --scorer sbert \
+  --sbert-model all-MiniLM-L6-v2 \
+  --tags "<REGION=MENA> <COUNTRY=EGY>"
+```
+
+## 7) LoRA fine-tune AIN (Q→A then QA→R)
+
+Prepare SFT JSONL for train/val (do this for QA and QAR splits):
+
+```bash
+python vcr_ain/prepare_ain_sft.py \
+  --input /path/to/out/vcr_qa.aug.jsonl \
+  --output /path/to/out/vcr_qa.sft.jsonl \
+  --format qwen
+
+python vcr_ain/prepare_ain_sft.py \
+  --input /path/to/out/vcr_qa_val.aug.jsonl \
+  --output /path/to/out/vcr_qa_val.sft.jsonl \
+  --format qwen
+```
+
+Stage 1 (Q→A):
+
+```bash
+python vcr_ain/train_ain_lora.py \
+  --train-jsonl /path/to/out/vcr_qa.sft.jsonl \
+  --valid-jsonl /path/to/out/vcr_qa_val.sft.jsonl \
+  --output-dir /path/to/ain_lora_qa \
+  --model MBZUAI/AIN \
+  --input-format qwen \
+  --bf16 \
+  --per-device-batch-size 1 \
+  --gradient-accumulation-steps 8 \
+  --lr 2e-5 \
+  --num-epochs 2
+```
+
+Stage 2 (QA→R, conditioned on gold answers):
+
+```bash
+python vcr_ain/train_ain_lora.py \
+  --train-jsonl /path/to/out/vcr_qar.sft.jsonl \
+  --valid-jsonl /path/to/out/vcr_qar_val.sft.jsonl \
+  --output-dir /path/to/ain_lora_qar \
+  --model MBZUAI/AIN \
+  --input-format qwen \
+  --bf16 \
+  --per-device-batch-size 1 \
+  --gradient-accumulation-steps 8 \
+  --lr 2e-5 \
+  --num-epochs 2
+```
+
+## Requirements
+
+You will need:
+
+```bash
+pip install transformers peft accelerate sentence-transformers qwen-vl-utils
+```
+
 ## Next
 
 This scaffold does not yet run AIN itself. It gives you clean inputs and
